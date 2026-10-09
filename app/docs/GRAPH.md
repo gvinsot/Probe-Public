@@ -123,5 +123,5 @@ probe graph query path api.Handle Cart.Total
 ```
 
 The answers are the JSON the reviewer receives. Coding agents can use them
-the same way; the [Claude Code plugin](https://github.com/gvinsot/Probe-Private/blob/main/plugins/probe/README.md) does
+the same way; the [Claude Code plugin](https://github.com/gvinsot/Probe/blob/main/plugins/probe/README.md) does
 through `/probe:graph`.

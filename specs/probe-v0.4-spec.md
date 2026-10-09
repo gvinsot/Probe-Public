@@ -1,6 +1,6 @@
 # Probe V0.4 — More deterministic evidence, less model dependence
 
-**Status:** consolidated specification of the CLI implemented on `main`, checked against commit `23a1d2e` on 2026-09-27. This describes source capabilities, not the feature set of every published binary. Release compatibility is covered in §7; Hub, website and deployment are covered in [probe-hub-spec.md](https://github.com/gvinsot/Probe-Private/blob/main/specs/probe-hub-spec.md).
+**Status:** consolidated specification of the CLI implemented on `main`, checked against commit `23a1d2e` on 2026-09-27. This describes source capabilities, not the feature set of every published binary. Release compatibility is covered in §7; Hub, website and deployment are covered in [probe-hub-spec.md](https://github.com/gvinsot/Probe/blob/main/specs/probe-hub-spec.md).
 
 **Implementation:** portable Go CLI, standard library only.  
 **Outputs:** `CONFIDENCE_REPORT.md`, `confidence-report.json`, optionally `confidence-report.sarif` and `PR_COMMENT.md`, and retained experiment artifacts.

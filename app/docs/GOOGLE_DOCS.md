@@ -2,7 +2,7 @@
 
 `--gdoc` gives Probe the design and requirement documents a change implements, written in Google Docs. `review`, `lint` and `plan` then read the code change against them. The documents become part of the intent, like [Notion pages](NOTION.md) and [Jira](JIRA.md) or [Linear](LINEAR.md) issues.
 
-This is not the desktop application. [Probe Desktop](https://github.com/gvinsot/Probe-Private/blob/main/desktop/README.md) compares versions of Office documents. Here a document is not what is reviewed: it is context for understanding a code change.
+This is not the desktop application. [Probe Desktop](https://github.com/gvinsot/Probe/blob/main/desktop/README.md) compares versions of Office documents. Here a document is not what is reviewed: it is context for understanding a code change.
 
 ```sh
 export PROBE_GOOGLE_CREDENTIALS=/secure/probe-reader.json   # a service-account key

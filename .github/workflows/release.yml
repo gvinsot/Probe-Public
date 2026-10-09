@@ -1,6 +1,6 @@
 name: Build release artifacts
 
-# Manual release of the public CLI; Desktop releases live in Probe-Private.
+# Manual release of the public CLI; Desktop releases live in Probe.
 on:
   workflow_dispatch:
     inputs:

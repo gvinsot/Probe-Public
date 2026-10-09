@@ -76,7 +76,7 @@ These fields are attribution, not evidence. They appear only when a swarm ran, s
 | `reviewer.swarm.partition_files` | trusted policy | 15 | Split `correctness` for changes with more changed files (0..1000; 0 never splits). |
 | `--swarm` / `--swarm=false` | `review` | policy | Turn the swarm on (default agents) or off for this run. |
 | `--swarm-agents LIST` | `review` | — | Agents to run for this run; implies `--swarm`. |
-| `PROBE_HUB_SWARM` | [Probe Hub](https://github.com/gvinsot/Probe-Private/blob/main/hub/README.md) | off | `true` for the default agents or a list of agents; applies to every AI review the hub runs. |
+| `PROBE_HUB_SWARM` | [Probe Hub](https://github.com/gvinsot/Probe/blob/main/hub/README.md) | off | `true` for the default agents or a list of agents; applies to every AI review the hub runs. |
 
 - **Cost.** Provider traffic grows with the number of agents: five agents can cost up to five times a single reviewer. Choose the agents that matter for the repository, and lower `max_iterations` if needed.
 - **Mode restrictions.** Lint never runs a reviewer, so `--swarm` and `--swarm-agents` are refused on `lint`, and with `--reviewer=false`.

@@ -3,7 +3,7 @@
 With Claude Code, the official plugin wraps this loop: `/probe:review`,
 `/probe:findings`, `/probe:fix` and `/probe:context` (intent, plan, base), and a
 `probe-reviewer` agent Claude can run before a handoff. See
-[the private plugin repository](https://github.com/gvinsot/Probe-Private/tree/main/plugins/probe). The instructions below apply
+[`plugins/probe`](https://github.com/gvinsot/Probe/blob/main/plugins/probe/README.md). The instructions below apply
 to any agent.
 
 Add the following instructions to a project's agent guidance after installing a

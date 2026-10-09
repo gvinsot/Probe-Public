@@ -55,7 +55,7 @@ Change `style=` to any shields.io style. This variant has no logo.
 
 ## Live result from Probe Hub
 
-A repository monitored by [Probe Hub](https://github.com/gvinsot/Probe-Private/blob/main/hub/README.md) also has a live
+A repository monitored by [Probe Hub](https://github.com/gvinsot/Probe/blob/main/hub/README.md) also has a live
 badge showing the latest recorded result (`no blocker`, `3 to review`,
 `reproduced issue`, `running`…). The Hub returns its URL, with a random badge
 key, when the repository is monitored:
@@ -72,8 +72,8 @@ uses Probe, the live one shows the latest run.
 
 | URL | Source |
 | --- | --- |
-| `https://probe.technology/badge/verified-by-probe.svg` | [`web/public/badge/verified-by-probe.svg`](https://github.com/gvinsot/Probe-Private/blob/main/web/public/badge/verified-by-probe.svg) |
-| `https://probe.technology/badge/verified-by-probe.json` | [`web/public/badge/verified-by-probe.json`](https://github.com/gvinsot/Probe-Private/blob/main/web/public/badge/verified-by-probe.json) (shields.io endpoint schema) |
+| `https://probe.technology/badge/verified-by-probe.svg` | [`web/public/badge/verified-by-probe.svg`](https://github.com/gvinsot/Probe/blob/main/web/public/badge/verified-by-probe.svg) |
+| `https://probe.technology/badge/verified-by-probe.json` | [`web/public/badge/verified-by-probe.json`](https://github.com/gvinsot/Probe/blob/main/web/public/badge/verified-by-probe.json) (shields.io endpoint schema) |
 
 Both URLs are stable: do not rename them, since external READMEs point to them.
 The website serves them with `Cache-Control: no-cache` like its other assets.

@@ -310,13 +310,15 @@ jobs:
   review:
     uses: gvinsot/Probe-Public/.github/workflows/review.yml@REPLACE_WITH_REVIEWED_COMMIT_SHA
     with:
+      probe-url: https://github.com/gvinsot/Probe-Public/releases/download/REVIEWED_TAG/REVIEWED_LINUX_AMD64_ARCHIVE.tar.gz
+      probe-sha256: REPLACE_WITH_REVIEWED_ARCHIVE_SHA256
       enforce: false
       reviewer: false
 ```
 
 Replace the placeholder with a reviewed commit **containing this workflow**;
-the v0.1.0 tag predates it. The workflow is present on `main`, while the binary
-it downloads remains pinned to v0.1.0.
+Select a public release archive and its reviewed SHA-256 with the required
+`probe-url` and `probe-sha256` inputs; never use a moving latest URL.
 Supply `base-sha` and `head-sha` explicitly when calling outside a PR event.
 For another language/dependency image, set `sandbox-image` to match the trusted
 baseline policy's image. It must already contain the project's dependencies.
@@ -347,3 +349,10 @@ for checks before the PR and before production deployment.
 
 Once Probe runs on a repository's pull requests, its README can show the
 ["verified by Probe" badge](BADGE.md).
+
+
+### Public snapshot review workflow
+
+The public reusable workflow requires `probe-url` and `probe-sha256` inputs.
+Use a reviewed Linux amd64 archive from a published Probe-Public release and
+its SHA256SUMS entry. The private repository release URLs are not public.

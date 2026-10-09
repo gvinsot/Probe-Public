@@ -3,6 +3,14 @@ name: Probe reusable review
 on:
   workflow_call:
     inputs:
+      probe-url:
+        description: Public URL of a reviewed Linux amd64 Probe tar.gz release archive
+        type: string
+        required: true
+      probe-sha256:
+        description: Reviewed SHA-256 of that archive
+        type: string
+        required: true
       base-sha:
         type: string
         default: ''
@@ -45,14 +53,20 @@ jobs:
           persist-credentials: false
       - name: Install trusted Probe binary
         shell: bash
+        env:
+          PROBE_URL: ${{ inputs.probe-url }}
+          PROBE_SHA256: ${{ inputs.probe-sha256 }}
         run: |
           set -euo pipefail
+          [[ "$PROBE_URL" == https://* ]] || exit 1
+          [[ "$PROBE_SHA256" =~ ^[a-fA-F0-9]{64}$ ]] || exit 1
           cd "$RUNNER_TEMP"
-          curl --fail --location --retry 3 -o probe.tar.gz \
-            https://github.com/gvinsot/Probe/releases/download/v0.5.0/probe-v0.5.0-linux-amd64.tar.gz
-          echo '27f7fdf8fceccae0f8fd2b7df2e6d67ebecb094afe12d26a923977f38290099d  probe.tar.gz' | sha256sum --check
-          tar -xzf probe.tar.gz
-          echo "$RUNNER_TEMP/probe-v0.5.0-linux-amd64" >> "$GITHUB_PATH"
+          curl --fail --location --retry 3 -o probe.tar.gz "$PROBE_URL"
+          printf '%s  probe.tar.gz\n' "$PROBE_SHA256" | sha256sum --check
+          mkdir probe-bin
+          tar -xzf probe.tar.gz -C probe-bin --strip-components=1
+          test -x probe-bin/probe
+          echo "$RUNNER_TEMP/probe-bin" >> "$GITHUB_PATH"
       - name: Preload the trusted test image
         env:
           IMAGE: ${{ inputs.sandbox-image }}

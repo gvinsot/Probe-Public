@@ -1,4 +1,8 @@
-# Probe
+# Probe CLI
+
+This repository is a generated public snapshot of the CLI maintained in the private
+Probe repository. Make source changes there and publish with `publishing/export_public.py`.
+Do not edit exported files directly; exports also synchronize deletions.
 
 [![Version](https://img.shields.io/github/v/tag/gvinsot/Probe-Public?sort=semver&label=version)](https://probe.technology/download.html)
 [![License: AGPL-3.0](https://img.shields.io/github/license/gvinsot/Probe-Public)](LICENSE)
@@ -270,7 +274,7 @@ See the [CI integration guide](app/docs/CI.md) for GitHub Actions and the reusab
 
 ## Related products
 
-Probe Hub, Probe Desktop and the website are maintained separately in Probe-Private.
+Probe Hub, Probe Desktop and the website are maintained separately in Probe.
 This repository contains the public CLI and its development resources.
 
 ---
