@@ -1,0 +1,6 @@
+.git
+.env
+.env.*
+.probe/
+**/dist
+**/node_modules

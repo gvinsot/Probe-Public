@@ -1,0 +1,1063 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gvinsot/Probe/schema/confidence-report.schema.json",
+  "title": "Probe confidence report v1",
+  "description": "Recorded observations and review priorities, not a probability of correctness. Schema validation checks structure; it does not verify test execution, referential integrity, or the truth of a model's claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "tool_version", "generated_at", "change", "linter", "checks", "hypotheses", "evidence", "reproduced_issues", "unverified", "review_targets", "review_surface", "artifacts", "audit", "exit_code"],
+  "properties": {
+    "version": {"const": 1},
+    "tool_version": {"type": "string"},
+    "analysis_mode": {"const": "review-read-only", "description": "LLM source inspection only; no repository code or tests were executed."},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "intent": {"type": "string"},
+    "intent_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the intent text as recorded, after Probe PR-comment blocks were removed."},
+    "intent_criteria": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/intentCriterion"}, "description": "Acceptance criteria copied verbatim from the intent. Extraction is not understanding of the intent, and an empty list does not mean the change has no requirements."},
+    "coding_rules": {"type": "string", "maxLength": 32768, "description": "Team coding rules the operator gave the reviewer with --rules or --rules-file. The reviewer checks the changed code against them; a violation it finds is a hypothesis like any other. Recorded only when a reviewer ran."},
+    "coding_rules_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of coding_rules as recorded."},
+    "team_feedback": {"$ref": "#/$defs/teamFeedback"},
+    "knowledge": {"$ref": "#/$defs/knowledge"},
+    "context_repos": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/contextRepo"}, "description": "Other repositories the reviewer could read as cross-repository context (policy \"context\", directly or through repository clusters), each at one commit. Reading them is inspection, never evidence. Present only when a reviewer ran."},
+    "team_feedback_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the --feedback-file content as read."},
+    "change": {"$ref": "#/$defs/change"},
+    "policy": {"$ref": "#/$defs/policy"},
+    "prepare": {"$ref": "#/$defs/prepare"},
+    "linter": {"type": "array", "items": {"$ref": "#/$defs/signal"}},
+    "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}},
+    "hypotheses": {"type": "array", "items": {"$ref": "#/$defs/hypothesis"}},
+    "signal_assessments": {"type": "array", "items": {"$ref": "#/$defs/signalAssessment"}, "description": "The reviewer model's plain-language reading of linter signals. Model judgment, not evidence: it changes no hypothesis status. With ai_impacts_criticality, a kept no_risk reading lowers its signal's severity by one level and sets a low signal aside."},
+    "ai_impacts_criticality": {"type": "boolean", "description": "Records --ai-impacts-criticality: kept no_risk readings of linter signals lowered their severity, which review targets, the review surface and the exit code then use."},
+    "reviewer_summary": {"type": "string", "description": "The reviewer model's closing text. Model output, not evidence."},
+    "pr_summary": {"$ref": "#/$defs/prSummary"},
+    "reviewer_agents": {"type": "array", "minItems": 2, "maxItems": 12, "items": {"$ref": "#/$defs/reviewerAgent"}, "description": "The agents of a reviewer swarm, when one ran: each investigated the change with one focus, in parallel. A description of the run, not evidence."},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "reproduced_issues": {
+      "type": "array",
+      "items": {"allOf": [{"$ref": "#/$defs/hypothesis"}, {"properties": {"status": {"const": "REPRODUCED"}}}]}
+    },
+    "base_tests": {"$ref": "#/$defs/baseTests"},
+    "divergences": {"type": "array", "items": {"$ref": "#/$defs/divergence"}, "description": "Validated differences between recorded values for recorded inputs. Each records a difference, not which revision is correct, and never produces exit code 1."},
+    "intent_test_failures": {
+      "type": "array",
+      "items": {"allOf": [{"$ref": "#/$defs/hypothesis"}, {"properties": {"status": {"const": "INTENT_TEST_FAILED"}}, "required": ["criterion_id"]}]},
+      "description": "Hypotheses whose model-written, candidate-only test for an acceptance criterion failed on an assertion. They are not reproduced issues: there is no baseline control, and the test or its reading of the criterion may be wrong."
+    },
+    "unverified": {"type": "array", "items": {"type": "string"}},
+    "review_targets": {"type": "array", "items": {"$ref": "#/$defs/reviewTarget"}},
+    "review_surface": {"$ref": "#/$defs/reviewSurface"},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "mutation": {"$ref": "#/$defs/mutation"},
+    "fuzz": {"$ref": "#/$defs/fuzz"},
+    "impact": {"$ref": "#/$defs/impact"},
+    "graph": {"$ref": "#/$defs/graph", "description": "Repository graph of the head commit (components, packages, files, functions, types, external dependencies and their relationships), queried by the AI reviewer, and its structural delta against the base. Static observations of committed files, never evidence. Absent with --graph=false."},
+    "execution": {"$ref": "#/$defs/execution"},
+    "plan_drift": {"$ref": "#/$defs/planDrift"},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "audit": {"type": "array", "items": {"$ref": "#/$defs/auditEvent"}},
+    "exit_code": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3, 4],
+      "description": "0: completed without a reproduced blocker; 1: reproduced high/critical issue; 2: human review required in CI; 3: configuration failure; 4: operational failure. Code 0 does not establish correctness. Only a reproduced high/critical hypothesis produces 1. DIVERGED, INTENT_TEST_FAILED and every other v0.4 record never produce 1."
+    }
+  },
+  "$defs": {
+    "planContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_commit", "files", "symbols", "critical_files", "manifests", "dependencies", "new_packages"],
+      "description": "The contract a PLAN.json declared: planned paths (old paths of renames included), announced symbol changes, planned files matching a critical path at plan time, dependency manifests and new Go packages.",
+      "properties": {
+        "base_commit": {"type": "string"},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/path"}},
+        "symbols": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "name", "change"], "properties": {"path": {"$ref": "#/$defs/path"}, "name": {"type": "string", "minLength": 1}, "change": {"type": "string", "enum": ["add", "body", "signature", "remove"]}}}},
+        "critical_files": {"type": "array", "items": {"$ref": "#/$defs/path"}},
+        "manifests": {"type": "array", "items": {"$ref": "#/$defs/path"}},
+        "dependencies": {"type": "boolean"},
+        "new_packages": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "planDrift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "plan_sha256", "base_matches", "critical_globs", "contract", "items", "assessment", "decision", "decision_reasons", "note"],
+      "description": "Scope drift of the change against a plan (review --plan). Finalize recomputes status and items from the contract, the critical globs, the diff and the public_api_change signals; it checks that the change stays within what was announced, not that it is correct.",
+      "properties": {
+        "status": {"type": "string", "enum": ["conforming", "drifted"]},
+        "plan_sha256": {"type": "string"},
+        "intent_sha256": {"type": "string"},
+        "base_matches": {"type": "boolean"},
+        "critical_globs": {"type": "array", "items": {"type": "string"}},
+        "contract": {"$ref": "#/$defs/planContract"},
+        "items": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["kind", "severity", "path", "summary"], "properties": {"kind": {"type": "string", "enum": ["unplanned_file", "unplanned_test_file", "planned_file_untouched", "unannounced_exported_change", "unannounced_critical_path", "unannounced_dependency_change"]}, "severity": {"$ref": "#/$defs/severity"}, "path": {"$ref": "#/$defs/path"}, "symbol": {"type": "string"}, "summary": {"type": "string"}}}},
+        "assessment": {"type": "object", "additionalProperties": false, "required": ["status", "major", "flagged_categories", "gaps"], "description": "The plan's risk re-assessed by the review from the plan's proposal at its base commit, with the review's trusted policy.", "properties": {"status": {"type": "string", "enum": ["assessed", "unavailable"]}, "major": {"type": "boolean"}, "flagged_categories": {"type": "array", "items": {"type": "string", "enum": ["critical_parts", "architecture", "regression_risk", "other_major"]}}, "gaps": {"type": "array", "items": {"type": "string"}, "description": "What the assessment could not measure; each gap keeps the plan's risk unknown and requires human review."}, "reason": {"type": "string"}}},
+        "decision": {"type": "string", "enum": ["human_review_required", "no_human_review_required"], "description": "The plan gate, recomputed by Finalize: no_human_review_required only when the plan raised no category, the change conforms to it, and nothing else in the report requests human review. A process decision, not a correctness verdict."},
+        "decision_reasons": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"}
+      }
+    },
+    "id": {"type": "string", "minLength": 1},
+    "path": {"type": "string", "minLength": 1, "description": "Repository-relative Git path, unless the containing artifact explicitly records an output filesystem path."},
+    "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+    "side": {"type": "string", "enum": ["old", "new"]},
+    "count": {"type": "integer", "minimum": 0},
+    "line": {"type": "integer", "minimum": 1},
+    "location": {"type": "integer", "minimum": 0, "description": "One-based line number; 0 denotes a file-level location."},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "imageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "criterionId": {"type": "string", "pattern": "^AC-[1-9][0-9]{0,2}$"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]{0,127}$"},
+    "commitId": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+    "mutationCheckId": {"type": "string", "pattern": "^mutation-check-[1-9][0-9]*$"},
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_ref", "head_ref", "base_commit", "head_commit", "files", "additions", "deletions"],
+      "properties": {
+        "base_ref": {"type": "string"},
+        "head_ref": {"type": "string"},
+        "base_commit": {"type": "string", "description": "Resolved immutable base commit; empty only for an unpopulated report."},
+        "head_commit": {"type": "string", "description": "Resolved immutable candidate commit; empty only for an unpopulated report."},
+        "base_ref_commit": {"type": "string", "description": "Commit the base ref resolved to. It differs from base_commit when the comparison starts at the merge base."},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/changedFile"}},
+        "additions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "description": "Where the trusted policy of the run came from.",
+      "properties": {
+        "source": {"type": "string", "enum": ["base_ref", "explicit", "default"]},
+        "commit": {"type": "string", "description": "Commit the policy was read from (base_ref) or looked up at (default)."},
+        "path": {"type": "string", "minLength": 1, "description": "Repository-relative policy path for base_ref; the local file path for explicit."}
+      }
+    },
+    "changedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "binary", "additions", "deletions", "hunks"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "old_path": {"$ref": "#/$defs/path"},
+        "status": {"type": "string", "enum": ["A", "C", "D", "M", "R", "T", "U", "X", "B"]},
+        "binary": {"type": "boolean"},
+        "additions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"},
+        "hunks": {"type": "array", "items": {"$ref": "#/$defs/hunk"}}
+      }
+    },
+    "hunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["old_start", "old_lines", "new_start", "new_lines", "lines"],
+      "properties": {
+        "old_start": {"$ref": "#/$defs/location"},
+        "old_lines": {"$ref": "#/$defs/count"},
+        "new_start": {"$ref": "#/$defs/location"},
+        "new_lines": {"$ref": "#/$defs/count"},
+        "lines": {"type": "array", "items": {"$ref": "#/$defs/diffLine"}}
+      }
+    },
+    "diffLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "content"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["add", "delete", "context"]},
+        "old_line": {"$ref": "#/$defs/line"},
+        "new_line": {"$ref": "#/$defs/line"},
+        "content": {"type": "string", "description": "Line content may be redacted; line coordinates are retained."}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "add"}}}, "then": {"required": ["new_line"]}},
+        {"if": {"properties": {"kind": {"const": "delete"}}}, "then": {"required": ["old_line"]}},
+        {"if": {"properties": {"kind": {"const": "context"}}}, "then": {"required": ["old_line", "new_line"]}}
+      ]
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "line", "severity", "summary", "evidence"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/location"},
+        "end_line": {"$ref": "#/$defs/line"},
+        "side": {"$ref": "#/$defs/side"},
+        "scope": {"type": "string", "enum": ["file"], "description": "The signal concerns the whole file; line and side only place it on the file's first changed line."},
+        "symbol": {"type": "string"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "summary": {"type": "string"},
+        "evidence": {"type": "string", "description": "Deterministic observation or heuristic explanation; a signal is not a reproduced defect."}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "status", "exit_code", "duration_ms", "output", "truncated"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "TIMEOUT", "ERROR"]},
+        "command": {"type": "array", "items": {"type": "string"}, "description": "Configured argument vector; never a free-form shell command."},
+        "exit_code": {"type": "integer", "minimum": -1, "description": "-1 means no process exit status was available."},
+        "duration_ms": {"$ref": "#/$defs/count"},
+        "output": {"type": "string"},
+        "truncated": {"type": "boolean"},
+        "results": {"type": "string", "description": "Normalized structured output that a verifiable runner returned on the payload channel (a Jest-compatible report or a fuzz observation stream). It is kept apart from output so that log text cannot impersonate it; code executing in the sandbox can still write it."},
+        "cache": {"$ref": "#/$defs/checkCache"},
+        "error_cause": {"const": "test", "description": "On an ERROR check of a model-written test (generated_test_*): the test ran in the sandbox but did not build, load or run its named tests. A failure of the model's test, not of the run: it leaves its evidence unverified and requests review, never exit 4."}
+      },
+      "allOf": [
+        {"if": {"required": ["error_cause"]}, "then": {"properties": {"status": {"const": "ERROR"}, "kind": {"pattern": "^generated_test_"}}}},
+        {"if": {"properties": {"status": {"const": "PASS"}}}, "then": {"properties": {"exit_code": {"const": 0}}}},
+        {"if": {"properties": {"status": {"const": "FAIL"}}}, "then": {"properties": {"exit_code": {"minimum": 1, "maximum": 124}}}},
+        {"if": {"required": ["cache"]}, "then": {"properties": {"kind": {"pattern": "_base$"}}}}
+      ]
+    },
+    "checkCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "key", "recorded_at", "recorded_run", "recorded_check", "recorded_duration_ms", "live_runs"],
+      "description": "A hit replays a recorded baseline execution of byte-identical inputs. It is not a fresh execution, and it never supports a reproduced issue, a divergence or a FAILS_ON_CANDIDATE result.",
+      "properties": {
+        "status": {"type": "string", "enum": ["hit", "stored"]},
+        "key": {"$ref": "#/$defs/sha256"},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "recorded_run": {"type": "string"},
+        "recorded_check": {"type": "string"},
+        "recorded_duration_ms": {"$ref": "#/$defs/count"},
+        "live_runs": {"type": "integer", "minimum": 1, "description": "Live executions of this key that agreed on status, exit code and truncation."}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "description", "status", "test_names"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "enum": ["source_observation", "differential_test", "differential_observation", "differential_fuzz", "base_test_differential", "impacted_test_differential", "intent_test"]},
+        "description": {"type": "string"},
+        "path": {"$ref": "#/$defs/path"},
+        "output": {"type": "string"},
+        "check_id": {"$ref": "#/$defs/id"},
+        "base_check_id": {"$ref": "#/$defs/id"},
+        "repeat_check_id": {"$ref": "#/$defs/id", "description": "Live baseline repeat of a differential_observation experiment."},
+        "criterion_id": {"$ref": "#/$defs/criterionId"},
+        "referenced_symbols": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/identifier"}, "description": "Changed symbols that the intent test references statically."},
+        "runner": {"type": "string", "enum": ["go_test_json", "jest_json", "pytest_junit"], "description": "Verifier used to confirm that the generated named tests actually ran: go test events, a Vitest or Jest JSON report, or a pytest JUnit XML report."},
+        "test_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Names extracted from generated test source; empty for observations and unsupported runners."},
+        "status": {"type": "string", "enum": ["OBSERVED", "REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED", "DIVERGED", "NOT_DIVERGED", "FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "INTENT_TEST_FAILED", "INTENT_TEST_PASSED"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "source_observation"}}}, "then": {"required": ["path"], "properties": {"status": {"const": "OBSERVED"}}}},
+        {"if": {"properties": {"kind": {"const": "differential_test"}}}, "then": {"required": ["check_id", "base_check_id"], "properties": {"status": {"enum": ["REPRODUCED", "NOT_REPRODUCED", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"status": {"enum": ["REPRODUCED", "NOT_REPRODUCED", "DIVERGED", "NOT_DIVERGED", "FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "INTENT_TEST_FAILED", "INTENT_TEST_PASSED"]}}}, "then": {"required": ["runner"], "properties": {"test_names": {"minItems": 1}}}},
+        {"if": {"properties": {"kind": {"const": "differential_observation"}}}, "then": {"required": ["check_id", "base_check_id", "runner", "path"], "properties": {"test_names": {"minItems": 1}, "status": {"enum": ["DIVERGED", "NOT_DIVERGED", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"kind": {"const": "differential_observation"}, "status": {"const": "DIVERGED"}}}, "then": {"required": ["repeat_check_id"]}},
+        {"if": {"properties": {"kind": {"const": "differential_fuzz"}}}, "then": {"required": ["check_id", "base_check_id", "runner", "path"], "properties": {"runner": {"enum": ["go_test_json", "jest_json", "pytest_junit"], "description": "go_test_json for a Go harness; jest_json for a TS/JS harness run by Vitest or Jest; pytest_junit for a Python harness run by pytest. A TS/JS or Python harness run has the observation stream as its single payload."}, "test_names": {"minItems": 1, "maxItems": 1}, "status": {"enum": ["DIVERGED", "NOT_DIVERGED", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"kind": {"const": "base_test_differential"}}}, "then": {"required": ["path", "check_id", "base_check_id", "runner"], "properties": {"runner": {"enum": ["go_test_json", "jest_json", "pytest_junit"], "description": "go_test_json for a Go test function, jest_json for a TypeScript or JavaScript test run by a Vitest or Jest template, pytest_junit for a Python test run by a pytest template."}, "test_names": {"minItems": 1, "maxItems": 1}, "status": {"enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"kind": {"const": "impacted_test_differential"}}}, "then": {"required": ["path", "check_id", "base_check_id", "runner"], "properties": {"runner": {"enum": ["go_test_json", "jest_json", "pytest_junit"], "description": "go_test_json for a Go test function, jest_json for a TypeScript or JavaScript test run by a Vitest or Jest template, pytest_junit for a Python test run by a pytest template."}, "test_names": {"minItems": 1, "maxItems": 1}, "status": {"enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"kind": {"const": "intent_test"}}}, "then": {"required": ["check_id", "criterion_id", "runner", "path"], "not": {"required": ["base_check_id"]}, "properties": {"test_names": {"minItems": 1}, "status": {"enum": ["INTENT_TEST_FAILED", "INTENT_TEST_PASSED", "UNVERIFIED"]}}}},
+        {"if": {"properties": {"kind": {"const": "intent_test"}, "status": {"const": "INTENT_TEST_FAILED"}}}, "then": {"required": ["referenced_symbols"], "properties": {"referenced_symbols": {"minItems": 1}}}}
+      ]
+    },
+    "codeRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Code a PR summary cites: a changed file, or lines of it within its hunks. Lines are on the new side unless side is old.",
+      "required": ["path"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "side": {"const": "old"},
+        "quote": {"type": "string", "minLength": 1, "description": "Code the model quoted and the CLI found, whitespace aside, at exactly these lines. It checks the citation, not the statement."}
+      },
+      "allOf": [{"if": {"required": ["end_line"]}, "then": {"required": ["start_line"]}}, {"if": {"required": ["side"]}, "then": {"required": ["start_line"]}}, {"if": {"required": ["quote"]}, "then": {"required": ["start_line"]}}]
+    },
+    "prSummaryRefs": {"type": "array", "maxItems": 6, "items": {"$ref": "#/$defs/codeRef"}},
+    "prSummaryPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "refs"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "refs": {"$ref": "#/$defs/prSummaryRefs"}
+      }
+    },
+    "prSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A natural-language summary of the change for a pull request description, written by the reviewer model after the review. Model output, not evidence: it changes no status, severity or exit code.",
+      "required": ["title", "overview", "changes", "behavior_changes", "risks", "review_focus", "testing", "model"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 120},
+        "overview": {"type": "string", "minLength": 1},
+        "changes": {"type": "array", "maxItems": 12, "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "One purpose of the change, the code it covers, and the linter signals and hypotheses that point at that code. Each ID is cited by at most one area; signals and hypotheses no area cites stay ungrouped. A reading of the change, not evidence.",
+          "required": ["area", "summary", "refs", "signal_ids", "hypothesis_ids"],
+          "properties": {
+            "area": {"type": "string", "minLength": 1},
+            "summary": {"type": "string", "minLength": 1},
+            "refs": {"$ref": "#/$defs/prSummaryRefs"},
+            "signal_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "IDs from linter."},
+            "hypothesis_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "IDs from hypotheses."}
+          }
+        }},
+        "behavior_changes": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/prSummaryPoint"}},
+        "risks": {"type": "array", "maxItems": 8, "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "A risk the review recorded cites its signals and hypotheses; a risk read from the diff cites code. Each has at least one of them.",
+          "required": ["text", "severity", "signal_ids", "hypothesis_ids", "refs"],
+          "properties": {
+            "text": {"type": "string", "minLength": 1},
+            "severity": {"$ref": "#/$defs/severity", "description": "The model's estimate, raised to the highest severity of the findings the risk cites. Not evidence; it changes no exit code."},
+            "signal_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "IDs from linter."},
+            "hypothesis_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "IDs from hypotheses."},
+            "refs": {"$ref": "#/$defs/prSummaryRefs"}
+          }
+        }},
+        "review_focus": {"type": "array", "maxItems": 8, "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text", "severity", "refs"],
+          "properties": {
+            "text": {"type": "string", "minLength": 1},
+            "severity": {"$ref": "#/$defs/severity", "description": "The model's estimate, raised to the most severe signal or hypothesis on the cited lines. Not evidence; it changes no exit code."},
+            "refs": {"$ref": "#/$defs/prSummaryRefs"}
+          }
+        }, "description": "Each point cites at least one ref with lines and has a severity; most severe first."},
+        "testing": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/prSummaryPoint"}, "description": "The tests the change adds or modifies. What Probe executed is in checks."},
+        "model": {"type": "string", "minLength": 1},
+        "rejected_citations": {"type": "integer", "minimum": 1, "description": "Refs the CLI dropped because their quote is not in the diff."}
+      }
+    },
+    "reviewerAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "focus", "status", "hypotheses"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"},
+        "focus": {"type": "string", "minLength": 1},
+        "paths": {"type": "array", "maxItems": 2000, "items": {"type": "string"}, "description": "The changed files this agent owned; absent when it examined the whole change."},
+        "status": {"enum": ["completed", "incomplete"]},
+        "hypotheses": {"type": "integer", "minimum": 0},
+        "note": {"type": "string"}
+      }
+    },
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "status", "rationale", "evidence_ids"],
+      "properties": {
+        "agents": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$"}, "description": "The reviewer swarm agents that submitted this hypothesis. Attribution, not evidence."},
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"type": "string", "minLength": 1},
+        "severity": {"$ref": "#/$defs/severity"},
+        "status": {"type": "string", "enum": ["REPRODUCED", "DIVERGED", "INTENT_TEST_FAILED", "NOT_REPRODUCED", "UNVERIFIED", "DISMISSED"]},
+        "rationale": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "criterion_id": {"$ref": "#/$defs/criterionId"},
+        "intent_judgment": {"type": "string", "enum": ["expected_change", "unexpected_change"], "description": "Model judgment, not evidence. Allowed only on a DIVERGED hypothesis. Never affects status, severity, targets or exit code."}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["REPRODUCED", "DIVERGED", "INTENT_TEST_FAILED", "NOT_REPRODUCED", "DISMISSED"]}}}, "then": {"properties": {"evidence_ids": {"minItems": 1}}}},
+        {"if": {"properties": {"status": {"const": "INTENT_TEST_FAILED"}}}, "then": {"required": ["criterion_id"]}},
+        {"if": {"required": ["intent_judgment"]}, "then": {"properties": {"status": {"const": "DIVERGED"}}, "required": ["criterion_id"]}}
+      ]
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entries_total", "entries", "updates"],
+      "description": "The codebase knowledge base read at the tip of the base ref and given to the reviewer, and the updates it proposed. Context and model output, never evidence. Present only when a reviewer ran.",
+      "properties": {
+        "path": {"type": "string"},
+        "commit": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the file read; absent when there was none."},
+        "entries_total": {"type": "integer", "minimum": 0},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/knowledgeEntry"}, "description": "The entries relevant to the change: path matches first, then repository-wide entries, within a bounded budget."},
+        "updates": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/knowledgeUpdate"}, "description": "Additions, replacements (same title) and removals (obsolete) the reviewer proposed, written to knowledge-updates.json for a person to apply and commit."}
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "calls", "nodes", "edges", "components", "note"],
+      "properties": {
+        "status": {"enum": ["built", "partial", "unavailable"]},
+        "reason": {"type": "string"},
+        "commit": {"type": "string"},
+        "cache": {"enum": ["hit", "stored", "off"], "description": "hit: read from the graph cache; stored: built and stored; off: built for this run only."},
+        "calls": {"type": "boolean", "description": "Functions and calls come from the symbol index; false for a graph built without it."},
+        "nodes": {"$ref": "#/$defs/graphNodeCounts"},
+        "edges": {"$ref": "#/$defs/graphEdgeCounts"},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/graphComponent"}},
+        "delta": {"$ref": "#/$defs/graphDelta"},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"}
+      }
+    },
+    "graphNodeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["components", "packages", "files", "functions", "types", "dependencies"],
+      "properties": {
+        "components": {"type": "integer", "minimum": 0},
+        "packages": {"type": "integer", "minimum": 0},
+        "files": {"type": "integer", "minimum": 0},
+        "functions": {"type": "integer", "minimum": 0},
+        "types": {"type": "integer", "minimum": 0},
+        "dependencies": {"type": "integer", "minimum": 0}
+      }
+    },
+    "graphEdgeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contains", "calls", "member_of", "implements", "imports", "depends_on", "declares"],
+      "properties": {
+        "contains": {"type": "integer", "minimum": 0},
+        "calls": {"type": "integer", "minimum": 0},
+        "member_of": {"type": "integer", "minimum": 0},
+        "implements": {"type": "integer", "minimum": 0},
+        "imports": {"type": "integer", "minimum": 0},
+        "depends_on": {"type": "integer", "minimum": 0},
+        "declares": {"type": "integer", "minimum": 0}
+      }
+    },
+    "graphComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "files", "dependencies"],
+      "properties": {
+        "name": {"type": "string"},
+        "files": {"type": "integer", "minimum": 0},
+        "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Components of the repository it depends on (imports)."},
+        "dependencies": {"type": "integer", "minimum": 0, "description": "External dependencies it uses or declares."}
+      }
+    },
+    "graphDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_commit", "added", "removed", "added_total", "removed_total"],
+      "description": "Structural changes against the base commit: components, packages, types and external dependencies, and depends_on and declares edges, added or removed; each list holds at most 100 items.",
+      "properties": {
+        "base_commit": {"type": "string"},
+        "added": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/graphItem"}},
+        "removed": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/graphItem"}},
+        "added_total": {"type": "integer", "minimum": 0},
+        "removed_total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "graphItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"type": "string"},
+        "name": {"type": "string"},
+        "from": {"type": "string"},
+        "to": {"type": "string"}
+      }
+    },
+    "contextRepo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "clusters", "ref", "files", "status"],
+      "properties": {
+        "name": {"type": "string"},
+        "role": {"type": "string"},
+        "clusters": {"type": "array", "items": {"type": "string"}, "description": "The repository clusters it came from; empty when declared directly."},
+        "ref": {"type": "string"},
+        "commit": {"type": "string"},
+        "source": {"enum": ["local", "fetched"]},
+        "files": {"type": "integer", "minimum": 0},
+        "status": {"enum": ["available", "unavailable"]},
+        "reason": {"type": "string"}
+      }
+    },
+    "knowledgeEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "kind", "paths", "text"],
+      "properties": {
+        "title": {"type": "string"},
+        "kind": {"$ref": "#/$defs/knowledgeKind"},
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "updated": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    },
+    "knowledgeUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "kind", "paths", "text"],
+      "properties": {
+        "title": {"type": "string"},
+        "kind": {"$ref": "#/$defs/knowledgeKind"},
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"},
+        "reason": {"type": "string"},
+        "obsolete": {"type": "boolean"}
+      }
+    },
+    "knowledgeKind": {"enum": ["component", "relationship", "risk", "architecture", "convention", "review", "note"]},
+    "teamFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topics", "comments"],
+      "description": "Team feedback on earlier findings given to the reviewer with --feedback-file. Guidance for the model, never evidence: it changes no status, severity or exit code by itself. Recorded only when a reviewer ran.",
+      "properties": {
+        "topics": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/feedbackTopic"}},
+        "comments": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/feedbackComment"}}
+      }
+    },
+    "feedbackTopic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "useful", "not_useful", "changed", "unchanged"],
+      "properties": {
+        "topic": {"type": "string", "description": "signal:<linter kind>, issue or check."},
+        "useful": {"type": "integer", "minimum": 0},
+        "not_useful": {"type": "integer", "minimum": 0},
+        "changed": {"type": "integer", "minimum": 0, "description": "The next analyzed commit changed the file of the finding (a heuristic, not proof of a fix)."},
+        "unchanged": {"type": "integer", "minimum": 0, "description": "The next analyzed commit left the file of the finding unchanged."}
+      }
+    },
+    "feedbackComment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "comment"],
+      "properties": {
+        "topic": {"type": "string"},
+        "path": {"type": "string"},
+        "title": {"type": "string"},
+        "vote": {"enum": ["up", "down"]},
+        "comment": {"type": "string"},
+        "reply_to": {"type": "string", "description": "The comment this one answers."}
+      }
+    },
+    "signalAssessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_id", "title", "explanation", "judgment", "evidence_ids"],
+      "properties": {
+        "signal_id": {"$ref": "#/$defs/id"},
+        "title": {"type": "string", "minLength": 1},
+        "explanation": {"type": "string", "minLength": 1},
+        "judgment": {"type": "string", "enum": ["risk", "no_risk", "uncertain"], "description": "Model judgment, not evidence. no_risk is kept only when a non-blank rationale cites a verified source observation; otherwise it is recorded as uncertain."},
+        "rationale": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "adjusted_severity": {"$ref": "#/$defs/severity", "description": "Under ai_impacts_criticality, the signal's severity lowered by one level after this kept no_risk reading. Review targets, the review surface and the exit code use it; the signal keeps the linter's severity."},
+        "set_aside": {"type": "boolean", "description": "Under ai_impacts_criticality, a low signal read as no_risk. It is no review target."}
+      },
+      "allOf": [
+        {"if": {"required": ["adjusted_severity"]}, "then": {"properties": {"judgment": {"const": "no_risk"}}}},
+        {"if": {"required": ["set_aside"]}, "then": {"properties": {"judgment": {"const": "no_risk"}}}},
+        {"if": {"properties": {"judgment": {"const": "no_risk"}}}, "then": {"required": ["rationale"], "properties": {"evidence_ids": {"minItems": 1}, "rationale": {"minLength": 1}}}}
+      ]
+    },
+    "reviewTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line", "side", "severity", "reasons", "signal_ids"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "start_line": {"$ref": "#/$defs/location"},
+        "end_line": {"$ref": "#/$defs/location"},
+        "side": {"$ref": "#/$defs/side"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "signal_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true}
+      }
+    },
+    "reviewSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changed_lines", "focused_lines"],
+      "properties": {
+        "changed_lines": {"$ref": "#/$defs/count", "description": "Distinct changed path/side/line coordinates; deletions and additions count separately."},
+        "focused_lines": {"$ref": "#/$defs/count", "description": "Distinct changed coordinates covered by prioritized targets; a prioritization count, never a coverage or confidence percentage. Changed-line execution is reported separately in coverage and is not expressed as a percentage."},
+        "note": {"type": "string", "description": "A fixed caveat written by older versions; no longer written."}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "added_lines", "executed_lines", "not_executed_lines", "no_block_lines", "not_measured_lines", "removed_lines", "files", "note"],
+      "description": "Which added lines a recorded coverage run executed. Executed means the line ran at least once during that run; it is never a claim that behavior is asserted, correct or safe. Absent, truncated, unparsable or unmapped data is reported as not_measured and never as not executed.",
+      "properties": {
+        "status": {"type": "string", "enum": ["not_configured", "not_measured", "measured"]},
+        "format": {"type": "string", "enum": ["go", "lcov"], "description": "Format of the recorded profile: a Go coverage profile, which measures changed Go files, or an LCOV report, which measures changed TypeScript and JavaScript files. Present only when status is measured."},
+        "reason": {"type": "string", "description": "Why nothing was measured. Present only when status is not_measured."},
+        "check_id": {"$ref": "#/$defs/id"},
+        "profile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Host-computed digest of the retained coverage profile artifact."},
+        "command": {"type": "array", "items": {"type": "string"}, "description": "Redacted argv actually executed, after the profile-path token was expanded."},
+        "added_lines": {"$ref": "#/$defs/count", "description": "Added new-side lines of changed non-test source files of the format's languages (Go for a Go profile, TypeScript and JavaScript for an LCOV report). Deleted lines are never measurable and are excluded; this is not review_surface.changed_lines."},
+        "executed_lines": {"$ref": "#/$defs/count", "description": "Added new-side lines inside at least one instrumented block that ran at least once during the recorded run. Never a claim that behavior is asserted, correct or safe."},
+        "not_executed_lines": {"$ref": "#/$defs/count", "description": "Added lines whose every containing instrumented block reported an execution count of zero."},
+        "no_block_lines": {"$ref": "#/$defs/count", "description": "Added lines of a measured file that no instrumented block covers. Not a claim that the source holds no executable statement."},
+        "not_measured_lines": {"$ref": "#/$defs/count", "description": "Added lines of a changed file the profile carried no block for; no execution claim is made about them."},
+        "removed_lines": {"$ref": "#/$defs/count", "description": "Deleted lines of in-scope files. A candidate-side run has no coordinate for them, so they are excluded from the four states."},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/fileCoverage"}, "description": "Per-file breakdown, sorted by path and capped at 500 entries; the counters above always cover every file."},
+        "note": {"type": "string"}
+      }
+    },
+    "fileCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "added_lines", "executed_lines", "not_executed_lines", "no_block_lines", "not_measured_lines"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "status": {"type": "string", "enum": ["measured", "not_measured"]},
+        "added_lines": {"$ref": "#/$defs/count"},
+        "executed_lines": {"$ref": "#/$defs/count"},
+        "not_executed_lines": {"$ref": "#/$defs/count"},
+        "no_block_lines": {"$ref": "#/$defs/count"},
+        "not_measured_lines": {"$ref": "#/$defs/count"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "description": "Local artifact path; consumers should not execute artifacts automatically."},
+        "kind": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "auditEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time", "tool", "arguments", "status", "duration_ms"],
+      "properties": {
+        "agent": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,39}$", "description": "The reviewer swarm agent that made this call."},
+        "time": {"type": "string", "format": "date-time"},
+        "tool": {"type": "string", "minLength": 1},
+        "arguments": {"type": "string", "description": "Bounded, redacted arguments or operation metadata."},
+        "status": {"type": "string", "enum": ["OK", "ERROR", "PASS", "FAIL", "SKIPPED", "TIMEOUT", "HIT"], "description": "HIT marks the stage:execution_cache event of a run replayed from the execution cache; a replay is not a fresh execution."},
+        "duration_ms": {"$ref": "#/$defs/count"}
+      }
+    },
+    "intentCriterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "line"],
+      "description": "An acceptance criterion copied verbatim from the intent.",
+      "properties": {
+        "id": {"$ref": "#/$defs/criterionId"},
+        "text": {"type": "string", "minLength": 1},
+        "line": {"$ref": "#/$defs/line"}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["test", "key", "status", "base", "candidate", "base_recorded", "candidate_recorded"],
+      "description": "One recorded key compared across revisions. base and candidate are display cuts of bounded, redacted serializations; comparison uses the full recorded values, never these cuts.",
+      "properties": {
+        "test": {"type": "string", "minLength": 1},
+        "key": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["EQUAL", "DIVERGED", "UNSTABLE", "INCOMPARABLE"]},
+        "base": {"type": "string"},
+        "candidate": {"type": "string"},
+        "base_recorded": {"type": "boolean"},
+        "candidate_recorded": {"type": "boolean"},
+        "truncated": {"type": "boolean"},
+        "reason": {"type": "string"}
+      }
+    },
+    "divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "kind", "test_path", "test_names", "check_ids", "hypothesis_ids", "observations", "note"],
+      "description": "A validated difference between recorded values for recorded inputs. It records a difference, not which revision is correct.",
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "enum": ["differential_observation", "differential_fuzz"]},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "symbol": {"type": "string"},
+        "anchor_source": {"type": "string", "enum": ["changed_function", "hypothesis"], "description": "changed_function: the changed function the experiment called; hypothesis: a model-chosen location."},
+        "test_path": {"$ref": "#/$defs/path"},
+        "test_names": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "check_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "hypothesis_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+        "observations": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"allOf": [{"$ref": "#/$defs/observation"}, {"properties": {"status": {"const": "DIVERGED"}}}]}},
+        "note": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "differential_observation"}}}, "then": {"properties": {"check_ids": {"minItems": 3}}}},
+        {"if": {"properties": {"kind": {"const": "differential_fuzz"}}}, "then": {"properties": {"check_ids": {"minItems": 4}}}},
+        {"if": {"required": ["anchor_source"]}, "then": {"required": ["path"]}}
+      ]
+    },
+    "fuzz": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "seed_scheme", "limits", "functions", "skipped", "skipped_total", "note"],
+      "description": "Deterministic differential fuzzing of changed functions. Outcomes describe the recorded inputs only: not_diverged does not establish equivalent behavior, and diverged does not establish which revision is correct.",
+      "properties": {
+        "status": {"type": "string", "enum": ["ran", "no_candidates", "not_run", "disabled"]},
+        "reason": {"type": "string"},
+        "seed_scheme": {"const": "probe-fuzz/v1"},
+        "limits": {"$ref": "#/$defs/fuzzLimits"},
+        "functions": {"type": "array", "items": {"$ref": "#/$defs/fuzzFunction"}},
+        "skipped": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/fuzzSkip"}},
+        "skipped_total": {"$ref": "#/$defs/count"},
+        "note": {"type": "string"}
+      }
+    },
+    "fuzzLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_functions", "max_packages", "max_inputs", "call_timeout_ms", "max_runtime_seconds"],
+      "properties": {
+        "max_functions": {"type": "integer", "minimum": 1},
+        "max_packages": {"type": "integer", "minimum": 1},
+        "max_inputs": {"type": "integer", "minimum": 1},
+        "call_timeout_ms": {"type": "integer", "minimum": 1},
+        "max_runtime_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "fuzzChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "candidate"],
+      "properties": {
+        "base": {"$ref": "#/$defs/id"},
+        "candidate": {"$ref": "#/$defs/id"},
+        "base_confirm": {"$ref": "#/$defs/id"},
+        "candidate_confirm": {"$ref": "#/$defs/id"}
+      }
+    },
+    "fuzzCounterexample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "input", "base", "candidate"],
+      "properties": {
+        "index": {"$ref": "#/$defs/count"},
+        "input": {"type": "string"},
+        "base": {"type": "string"},
+        "candidate": {"type": "string"}
+      }
+    },
+    "fuzzFunction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "end_line", "symbol", "signature", "outcome", "inputs", "compared", "diverged", "unstable", "unconfirmed", "not_recorded"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "end_line": {"$ref": "#/$defs/line"},
+        "symbol": {"type": "string", "minLength": 1},
+        "signature": {"type": "string"},
+        "test_name": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "enum": ["diverged", "not_diverged", "inconclusive"]},
+        "reason": {"type": "string"},
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "checks": {"$ref": "#/$defs/fuzzChecks"},
+        "counterexample": {"$ref": "#/$defs/fuzzCounterexample"},
+        "results_sha256": {"$ref": "#/$defs/sha256", "description": "Digest of the observation stream when it was kept only as an artifact."},
+        "inputs": {"$ref": "#/$defs/count"},
+        "compared": {"$ref": "#/$defs/count"},
+        "diverged": {"$ref": "#/$defs/count"},
+        "unstable": {"$ref": "#/$defs/count"},
+        "unconfirmed": {"$ref": "#/$defs/count"},
+        "not_recorded": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {"if": {"properties": {"outcome": {"const": "diverged"}}}, "then": {"required": ["evidence_id", "counterexample", "checks"], "properties": {"checks": {"required": ["base_confirm", "candidate_confirm"]}}}}
+      ]
+    },
+    "fuzzSkip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "symbol", "reason"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/location"},
+        "symbol": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "baseTests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "tests", "note"],
+      "description": "Baseline versions of changed tests run on candidate code. Not a reproduced defect; never sets exit code 1.",
+      "properties": {
+        "status": {"type": "string", "enum": ["no_candidates", "ran", "not_run"]},
+        "reason": {"type": "string"},
+        "tests": {"type": "array", "items": {"$ref": "#/$defs/baseTest"}},
+        "note": {"type": "string"}
+      }
+    },
+    "baseTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "line", "end_line", "change", "status"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "end_line": {"$ref": "#/$defs/line"},
+        "candidate_path": {"$ref": "#/$defs/path"},
+        "candidate_line": {"$ref": "#/$defs/line"},
+        "candidate_end_line": {"$ref": "#/$defs/line"},
+        "change": {"type": "string", "enum": ["removed", "modified", "shared_code_changed", "file_deleted"]},
+        "status": {"type": "string", "enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "UNVERIFIED"]},
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "reason": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"required": ["status"], "properties": {"status": {"enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE"]}}}, "then": {"required": ["evidence_id"]}}
+      ]
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "command", "limits", "files", "mutants", "generated", "dropped", "killed", "survived", "invalid", "timed_out", "inconclusive", "not_run", "checks", "note"],
+      "description": "Mutation of added lines of changed non-test Go files. A surviving mutant may be semantically equivalent and is not a defect, a missing test or dead code; tests of other packages were not run. Killed mutants are only counted. Status ran means every selected mutant reached KILLED, SURVIVED, INVALID or TIMEOUT and max_mutants dropped none; it is not exhaustive. There is no mutation score.",
+      "properties": {
+        "status": {"type": "string", "enum": ["not_run", "no_candidates", "ran", "incomplete"]},
+        "reason": {"type": "string"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "limits": {"$ref": "#/$defs/mutationLimits"},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/mutationFile"}},
+        "mutants": {"type": "array", "items": {"$ref": "#/$defs/mutant"}},
+        "generated": {"$ref": "#/$defs/count"},
+        "dropped": {"$ref": "#/$defs/count", "description": "Candidates not run because of max_mutants."},
+        "killed": {"$ref": "#/$defs/count"},
+        "survived": {"$ref": "#/$defs/count"},
+        "invalid": {"$ref": "#/$defs/count"},
+        "timed_out": {"$ref": "#/$defs/count"},
+        "inconclusive": {"$ref": "#/$defs/count"},
+        "not_run": {"$ref": "#/$defs/count"},
+        "checks": {"type": "array", "items": {"$ref": "#/$defs/check"}, "description": "The mutation ledger (mutation-check-N), kept apart from the top-level checks. Mutants are expected to fail, so these checks never request human review by themselves."},
+        "note": {"type": "string"},
+        "coverage_skipped": {"$ref": "#/$defs/count", "description": "Candidate mutants on added lines that a passing, measured coverage run reported as not executed; they were not generated."}
+      }
+    },
+    "mutationLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_mutants", "timeout_seconds", "max_runtime_seconds"],
+      "properties": {
+        "max_mutants": {"$ref": "#/$defs/count"},
+        "timeout_seconds": {"$ref": "#/$defs/count"},
+        "max_runtime_seconds": {"$ref": "#/$defs/count"}
+      }
+    },
+    "mutationFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "added_lines", "mutated_lines"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "status": {"type": "string", "enum": ["eligible", "skipped"]},
+        "reason": {"type": "string"},
+        "added_lines": {"$ref": "#/$defs/count"},
+        "mutated_lines": {"$ref": "#/$defs/count"}
+      }
+    },
+    "mutant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "line", "package", "operator", "original", "mutated", "status"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^mutant-[1-9][0-9]*$"},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "package": {"type": "string"},
+        "operator": {"type": "string"},
+        "original": {"type": "string"},
+        "mutated": {"type": "string"},
+        "status": {"type": "string", "enum": ["KILLED", "SURVIVED", "INVALID", "TIMEOUT", "INCONCLUSIVE", "NOT_RUN"]},
+        "check_id": {"$ref": "#/$defs/mutationCheckId"},
+        "control_check_id": {"$ref": "#/$defs/mutationCheckId"},
+        "patch_sha256": {"$ref": "#/$defs/sha256"},
+        "tests_run": {"$ref": "#/$defs/count"},
+        "failed_tests": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 1}},
+        "reason": {"type": "string"},
+        "column": {"$ref": "#/$defs/line", "description": "One-based byte column where the replaced span starts on line."},
+        "end_line": {"$ref": "#/$defs/line", "description": "Last line of a replaced span that covers several lines."},
+        "symbol": {"type": "string", "description": "Enclosing function; Recv.Name for a method."}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "SURVIVED"}}}, "then": {"required": ["check_id", "control_check_id", "patch_sha256", "tests_run"], "properties": {"tests_run": {"minimum": 1}}}},
+        {"if": {"properties": {"status": {"const": "KILLED"}}}, "then": {"required": ["check_id", "control_check_id", "failed_tests"], "properties": {"failed_tests": {"minItems": 1}}}}
+      ]
+    },
+    "impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "indexed_files", "changed_functions", "note"],
+      "description": "Static, approximate impact analysis of changed Go, TypeScript/JavaScript, Python and Rust functions (Go type-checked, the others scanned lexically), built from committed source without executing repository code or loading imports from outside the repository. It is never execution evidence. Interface edges are possible dispatch only, and an absent caller or test is not proof that none exists.",
+      "properties": {
+        "status": {"type": "string", "enum": ["not_applicable", "indexed", "limited", "unavailable"]},
+        "reason": {"type": "string"},
+        "indexed_files": {"$ref": "#/$defs/count"},
+        "changed_functions": {"type": "array", "items": {"$ref": "#/$defs/impactFunction"}},
+        "tests_status": {"type": "string", "enum": ["ran", "no_candidates", "not_run"]},
+        "tests_reason": {"type": "string"},
+        "languages": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["go", "typescript", "python", "rust"]}, "description": "Languages whose files the index holds. Present only when TypeScript/JavaScript, Python or Rust files changed; those are scanned lexically and linked by name (resolution \"name\")."},
+        "note": {"type": "string"}
+      }
+    },
+    "impactFunction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "end_line", "symbol", "change", "callers", "callers_total", "tests", "indexed", "tests_total"],
+      "description": "A changed function or method of a changed non-test Go, TypeScript/JavaScript, Python or Rust file. When indexed is false, its callers and tests were not searched and reason says why. When indexed is true and reason is present, a search bound was reached and callers or tests may be missing.",
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "end_line": {"$ref": "#/$defs/line"},
+        "symbol": {"type": "string", "minLength": 1},
+        "change": {"type": "string", "enum": ["body_changed", "signature_changed"]},
+        "callers": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/impactCaller"}},
+        "callers_total": {"$ref": "#/$defs/count", "description": "Callers the bounded index search found; not a count of all callers."},
+        "tests": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/impactTest"}},
+        "indexed": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "tests_total": {"$ref": "#/$defs/count", "description": "Reaching tests the bounded index search found; at most 20 are listed. Not a count of every test that exercises the function."}
+      }
+    },
+    "impactCaller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "symbol", "depth", "resolution"],
+      "description": "A reference to a changed function from unchanged, non-test code. A place to review, not a defect; interface resolution is possible dispatch only, and name resolution is a lexical match by name only.",
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "symbol": {"type": "string"},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 3},
+        "resolution": {"type": "string", "enum": ["static", "interface", "name"]}
+      }
+    },
+    "impactTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "line", "package", "depth", "resolution"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/path"},
+        "line": {"$ref": "#/$defs/line"},
+        "package": {"type": "string"},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 3},
+        "resolution": {"type": "string", "enum": ["static", "interface", "name"]},
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "status": {"type": "string", "enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE", "UNVERIFIED"]},
+        "reason": {"type": "string"},
+        "via": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string", "minLength": 1}, "description": "Declarations from the test to the changed function, as found by the static index."},
+        "file_changed": {"type": "boolean"}
+      },
+      "allOf": [
+        {"if": {"required": ["status"], "properties": {"status": {"enum": ["FAILS_ON_CANDIDATE", "PASSES_ON_CANDIDATE"]}}}, "then": {"required": ["evidence_id"]}}
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cache", "parallelism", "budget", "replay_backed"],
+      "description": "Execution cache, parallelism and runtime budget of a run that created a harness. replay_backed lists the evidence whose negative conclusion rests on a replayed baseline execution.",
+      "properties": {
+        "cache": {"$ref": "#/$defs/executionCache"},
+        "parallelism": {"$ref": "#/$defs/executionParallelism"},
+        "budget": {"$ref": "#/$defs/executionBudget"},
+        "replay_backed": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true}
+      }
+    },
+    "executionCache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scope", "hits", "stored", "misses", "uncacheable", "rejected", "write_failures", "evicted", "contradicted", "note"],
+      "description": "Status and counters of the opt-in baseline execution cache. A hit replays a recorded baseline execution and is not a fresh execution; the integrity checks of an entry detect corruption, not forgery.",
+      "properties": {
+        "status": {"type": "string", "enum": ["enabled", "disabled"]},
+        "reason": {"type": "string", "description": "Why no cache was used: not requested (no --cache-dir), sandbox networking, an image that could not be pinned, or an unusable directory."},
+        "scope": {"const": "baseline_only"},
+        "image_id": {"$ref": "#/$defs/imageId", "description": "The probed image ID that every keyed run executed."},
+        "policy_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the execution settings the trusted policy gave the sandbox (commands, image reference, network, limits); part of every key."},
+        "runtime": {"type": "string", "maxLength": 256, "description": "Docker server version, OS type and architecture recorded in every key. Kernel and runtime internals beyond it are not recorded."},
+        "hits": {"$ref": "#/$defs/count"},
+        "stored": {"$ref": "#/$defs/count"},
+        "misses": {"$ref": "#/$defs/count"},
+        "uncacheable": {"$ref": "#/$defs/count"},
+        "rejected": {"$ref": "#/$defs/count"},
+        "write_failures": {"$ref": "#/$defs/count"},
+        "evicted": {"$ref": "#/$defs/count"},
+        "contradicted": {"$ref": "#/$defs/count"},
+        "note": {"type": "string"}
+      }
+    },
+    "executionParallelism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "effective", "note"],
+      "description": "Concurrency of the initial checks (test, typecheck, build); every other sandbox run is sequential. Parallelism changes none of the rules for a check's timeout, classification or budget charge; concurrent checks share the Docker host, so they can take longer and be charged more.",
+      "properties": {
+        "requested": {"type": "integer", "minimum": 1, "maximum": 4, "description": "The --parallel value."},
+        "effective": {"type": "integer", "minimum": 1, "maximum": 4, "description": "The largest number of initial checks that ran at the same time, after the number of checks, the Docker server's capacity and the budget rule."},
+        "note": {"type": "string", "description": "Fixed text: whether no initial check started a sandbox, why effective is below requested, and the rules concurrent checks ran under."}
+      }
+    },
+    "executionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_runtime_ms", "spent_ms", "reviewer_reserve_ms", "deadline_reached"],
+      "properties": {
+        "max_runtime_ms": {"$ref": "#/$defs/count"},
+        "spent_ms": {"$ref": "#/$defs/count"},
+        "reviewer_reserve_ms": {"$ref": "#/$defs/count"},
+        "deadline_reached": {"type": "boolean"}
+      }
+    },
+    "prepare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "source_commit", "command", "user", "network", "base_image", "inputs", "duration_ms", "note"],
+      "description": "Dependency preparation from the base commit under the base-branch policy. A prepared image is not an attestation of its dependencies, and an equal key means equal inputs, not equal image content.",
+      "properties": {
+        "status": {"type": "string", "enum": ["built", "reused", "failed", "not_permitted", "not_run"]},
+        "reason": {"type": "string"},
+        "source_commit": {"$ref": "#/$defs/commitId"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "user": {"type": "string", "enum": ["sandbox", "root"]},
+        "network": {"type": "boolean", "description": "Network setting of the container that built image_id (for a reused image, a build of an earlier review, which the key records), or the setting this run would have used when no image was produced. It is not a setting of this review's checks, and it never applies to them."},
+        "key": {"$ref": "#/$defs/sha256", "description": "SHA-256 of a canonical JSON of: the schema probe-prepare/v1, the tool version, the base image ID, the argv, the user, the build's network setting, the sorted env, the sorted path and SHA-256 of each exported input (not its file mode), the SHA-256 of the container-argument template, and max_added_mb. Reuse also requires the same source commit. Equal keys mean equal inputs, not equal image content."},
+        "base_image": {"type": "string"},
+        "base_image_id": {"$ref": "#/$defs/imageId"},
+        "image_id": {"$ref": "#/$defs/imageId", "description": "The derived image every sandbox run of the review used."},
+        "added_bytes": {"$ref": "#/$defs/count", "description": "Size Docker reports for the layer the prepare container added to the base image."},
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/preparedInput"}},
+        "log_sha256": {"$ref": "#/$defs/sha256"},
+        "duration_ms": {"$ref": "#/$defs/count"},
+        "note": {"type": "string"}
+      }
+    },
+    "preparedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"$ref": "#/$defs/count"}
+      }
+    }
+  }
+}

@@ -1,0 +1,231 @@
+package reviewer
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gvinsot/Probe-Public/app/internal/harness"
+	"github.com/gvinsot/Probe-Public/app/internal/model"
+	"github.com/gvinsot/Probe-Public/app/internal/redact"
+)
+
+// errInputBudget reports a request larger than Options.MaxInputBytes; it is
+// never sent.
+var errInputBudget = errors.New("reviewer input budget exhausted")
+
+// chat is one bounded Chat Completions session: no proxy, no redirect,
+// credentials sent to the configured endpoint only, and every response size
+// bounded. It is shared by the investigation (Run) and the planner (Plan).
+type chat struct {
+	o         Options
+	endpoint  string
+	transport *http.Transport
+	client    *http.Client
+	maxTokens int // max_completion_tokens; 0: defaultMaxTokens
+	// noParallel omits parallel_tool_calls, which some providers do not
+	// accept (an OpenRouter route then finds no endpoint: HTTP 404).
+	noParallel bool
+	retryAfter time.Duration // the Retry-After of the last refused request; 0: none
+}
+
+// Output budget of a completion. Structured answers (a summary with its
+// quotes, a generated test in a tool call) outgrow 4096 tokens; a provider
+// that rejects 8192, such as a local model with a short context, falls back
+// to 4096, kept for the rest of the session.
+const (
+	defaultMaxTokens  = 8192
+	fallbackMaxTokens = 4096
+)
+
+// rateLimitBackoff is how long a rate-limited (429) or unavailable (503)
+// provider is given before each retry, unless it sends a Retry-After of at
+// most maxRetryAfter.
+var rateLimitBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+
+const maxRetryAfter = 30 * time.Second
+
+// newChat builds the session's client. The response-header wait is the whole
+// reviewer timeout: a non-streaming completion sends its headers only once the
+// answer is generated, which a shared endpoint can take minutes to do.
+func newChat(o Options, endpoint string) *chat {
+	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: o.Timeout, MaxIdleConns: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 30 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: o.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("reviewer redirects are prohibited") }}
+	return &chat{o: o, endpoint: endpoint, transport: transport, client: client}
+}
+
+func (c *chat) close() { c.transport.CloseIdleConnections() }
+
+// clean redacts credential shapes and the API key from text sent to or read
+// from the provider.
+func (c *chat) clean(s string) string {
+	s = harness.Redact(s)
+	if c.o.APIKey != "" {
+		s = strings.ReplaceAll(s, c.o.APIKey, "[REDACTED]")
+	}
+	return s
+}
+
+// requestError describes a failed request without echoing the transport error,
+// which can hold the endpoint URL: a timeout says how long the endpoint was
+// waited for, anything else is a transport failure or a prohibited redirect.
+func requestError(err error, elapsed, limit time.Duration) error {
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("reviewer endpoint gave no response within %s (reviewer timeout %s); the model may be slow or overloaded", elapsed.Round(time.Second), limit)
+	}
+	return errors.New("reviewer request failed (transport error or prohibited redirect)")
+}
+
+// toolCallIDs gives every tool call of a session a distinct ID. Providers
+// behind OpenAI-compatible gateways omit the ID or the type, or restart their
+// numbering (call_0) at every turn; each result must still answer its own
+// call, so an absent, oversized or already used ID is replaced by a local one
+// before the message joins the conversation.
+type toolCallIDs struct {
+	used map[string]bool
+	next int
+}
+
+// normalize rewrites the tool calls of m in place. A call whose type is set
+// to anything but function is an error.
+func (ids *toolCallIDs) normalize(m *message) error {
+	if ids.used == nil {
+		ids.used = map[string]bool{}
+	}
+	for i := range m.ToolCalls {
+		call := &m.ToolCalls[i]
+		if call.Type == "" {
+			call.Type = "function"
+		}
+		if call.Type != "function" {
+			return fmt.Errorf("tool call of unsupported type %q", redact.TruncateUTF8(call.Type, 40))
+		}
+		for call.ID == "" || len(call.ID) > 200 || ids.used[call.ID] {
+			ids.next++
+			call.ID = fmt.Sprintf("probe_call_%d", ids.next)
+		}
+		ids.used[call.ID] = true
+	}
+	return nil
+}
+
+type completionChoice struct {
+	Message      message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
+}
+
+// complete sends one request and returns the single choice, with the audit
+// event of the call (status OK or ERROR). errInputBudget is returned, with no
+// event worth recording, when the request exceeds the input budget. The
+// returned message is redacted and has the assistant role.
+func (c *chat) complete(ctx context.Context, messages []message, tools []map[string]any, iteration int) (completionChoice, model.AuditEvent, error) {
+	choice, event, status, err := c.send(ctx, messages, tools, iteration)
+	// A request a provider cannot handle (HTTP 400, or 404 from a router
+	// that finds no endpoint for its parameters) is sent again without its
+	// optional parameters, for the rest of the session: parallel_tool_calls
+	// first, then the larger output budget.
+	refused := func() bool { return status == http.StatusBadRequest || status == http.StatusNotFound }
+	if refused() && len(tools) > 0 && !c.noParallel {
+		c.noParallel = true
+		choice, event, status, err = c.send(ctx, messages, tools, iteration)
+	}
+	if refused() && cmp.Or(c.maxTokens, defaultMaxTokens) > fallbackMaxTokens {
+		c.maxTokens = fallbackMaxTokens
+		choice, event, status, err = c.send(ctx, messages, tools, iteration)
+	}
+	// A rate-limited or unavailable provider is retried after a pause,
+	// within the reviewer's deadline.
+	for _, wait := range rateLimitBackoff {
+		if status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
+			break
+		}
+		if c.retryAfter > 0 {
+			wait = c.retryAfter
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return choice, event, err
+		case <-timer.C:
+		}
+		choice, event, status, err = c.send(ctx, messages, tools, iteration)
+	}
+	return choice, event, err
+}
+
+// send is one attempt of complete; it also returns the HTTP status, 0 when no
+// response was received.
+func (c *chat) send(ctx context.Context, messages []message, tools []map[string]any, iteration int) (completionChoice, model.AuditEvent, int, error) {
+	// A request without tools omits both tool fields: providers reject
+	// parallel_tool_calls, and some an empty tools array, when no tool is
+	// offered.
+	var parallel *bool
+	if len(tools) > 0 && !c.noParallel {
+		parallel = new(bool)
+	}
+	body, err := json.Marshal(struct {
+		Model               string           `json:"model"`
+		Messages            []message        `json:"messages"`
+		Tools               []map[string]any `json:"tools,omitempty"`
+		MaxCompletionTokens int              `json:"max_completion_tokens"`
+		ParallelToolCalls   *bool            `json:"parallel_tool_calls,omitempty"`
+		Temperature         *float64         `json:"temperature,omitempty"`
+		Provider            json.RawMessage  `json:"provider,omitempty"`
+	}{c.o.Model, localize(messages, c.o.Language), tools, cmp.Or(c.maxTokens, defaultMaxTokens), parallel, c.o.Temperature, c.o.Provider})
+	if err != nil {
+		return completionChoice{}, model.AuditEvent{}, 0, err
+	}
+	if len(body) > c.o.MaxInputBytes {
+		return completionChoice{}, model.AuditEvent{}, 0, errInputBudget
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return completionChoice{}, model.AuditEvent{}, 0, errors.New("cannot construct reviewer request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.o.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.o.APIKey)
+	}
+	started := time.Now()
+	res, err := c.client.Do(req)
+	event := model.AuditEvent{Time: started.UTC(), Tool: "reviewer_completion", Arguments: fmt.Sprintf("iteration=%d", iteration+1), Status: "ERROR", DurationMS: time.Since(started).Milliseconds()}
+	if err != nil {
+		return completionChoice{}, event, 0, requestError(err, time.Since(started), c.o.Timeout)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(res.Body, 1024*1024+1))
+	res.Body.Close()
+	c.retryAfter = 0
+	if seconds, err := strconv.Atoi(strings.TrimSpace(res.Header.Get("Retry-After"))); err == nil && seconds > 0 {
+		c.retryAfter = min(time.Duration(seconds)*time.Second, maxRetryAfter)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return completionChoice{}, event, res.StatusCode, fmt.Errorf("reviewer endpoint returned HTTP %d", res.StatusCode)
+	}
+	if readErr != nil || len(data) > 1024*1024 {
+		return completionChoice{}, event, res.StatusCode, errors.New("reviewer response exceeded size limit or could not be read")
+	}
+	var response struct {
+		Choices []completionChoice `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil || len(response.Choices) != 1 {
+		return completionChoice{}, event, res.StatusCode, errors.New("reviewer returned an invalid completion")
+	}
+	event.Status = "OK"
+	event.DurationMS = time.Since(started).Milliseconds()
+	choice := response.Choices[0]
+	choice.Message.Role = "assistant"
+	choice.Message.ToolCallID = ""
+	choice.Message.Content = c.clean(choice.Message.Content)
+	return choice, event, res.StatusCode, nil
+}

@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+.probe/
+.claude/settings.local.json
+app/dist/
+*.log
+go.work.sum
